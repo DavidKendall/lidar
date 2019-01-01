@@ -25,6 +25,8 @@ typedef uint8_t measurement_buffer_t[5];
 
 void lidarRead(void * buffer, size_t length);
 
+const uint8_t comResetCore[] = {0xA5, 0x40};
+const uint8_t comStopScan[] = {0xA5, 0x25};
 const uint8_t comStartScan[] = {0xA5, 0x20};
 const uint8_t rspStartScan[] = {0xA5, 0x5A, 0x05, 0x00, 0x00, 0x40, 0x81};
 const uint8_t comGetInfo[] = {0xA5, 0x50};
@@ -46,47 +48,49 @@ int main() {
   int32_t i;
   ssize_t result;
 
+  //result = lidar.write(comResetCore, sizeof(comResetCore));
+  //assert(result == sizeof(comResetCore));
   pc.printf("Lidar Client\n");
+  result = lidar.write(comGetHealth, sizeof(comGetHealth));
+  assert(result == sizeof(comGetHealth));
+  red = 0;
+  green = 1;
+  lidarRead(lidBuffer, sizeof(rspGetHealth));
+  if (memcmp(lidBuffer, rspGetHealth, sizeof(rspGetHealth)) != 0) { 
+    pc.printf("Health: Bad response\n");
+    assert(false);
+  }
+  else {
+    lidarRead(&health, sizeof(rplidar_response_device_health_t));
+  }
+  if (health.status == 0) {
+    pc.printf("Health status: Good\n");
+  }
+  else {
+    pc.printf("Health status: Warning/Error %d\n", health.error_code);
+  }
+  result = lidar.write(comGetInfo, sizeof(comGetInfo));
+  assert(result == sizeof(comGetInfo));
+  red = 0;
+  green = 1;
+  lidarRead(lidBuffer, sizeof(rspGetInfo));
+  if (memcmp(lidBuffer, rspGetInfo, sizeof(rspGetInfo)) != 0) { 
+    pc.printf("Info: Bad response\n");
+    assert(false);
+  }
+  else {
+    lidarRead(&info, sizeof(rplidar_response_device_info_t));
+    pc.printf("Model: %d\n", info.model);
+    pc.printf("Firmware version: %d.%d\n", info.firmware_version >> 8, info.firmware_version & 0x00FF);
+    pc.printf("Hardware version: %d\n", info.hardware_version);
+    pc.printf("Serial Number: ");
+    for (i = 15; i >= 0; i--) {
+      pc.printf("%02x", info.serialnum[i]);
+    }
+    pc.printf("\n\n");
+  }
 
   while (true) {
-    result = lidar.write(comGetHealth, sizeof(comGetHealth));
-    assert(result == sizeof(comGetHealth));
-    red = 0;
-    green = 1;
-    lidarRead(lidBuffer, sizeof(rspGetHealth));
-    if (memcmp(lidBuffer, rspGetHealth, sizeof(rspGetHealth)) != 0) { 
-      pc.printf("Health: Bad response\n");
-      assert(false);
-    }
-    else {
-      lidarRead(&health, sizeof(rplidar_response_device_health_t));
-    }
-    if (health.status == 0) {
-      pc.printf("Health status: Good\n");
-    }
-    else {
-      pc.printf("Health status: Warning/Error %d\n", health.error_code);
-    }
-    result = lidar.write(comGetInfo, sizeof(comGetInfo));
-    assert(result == sizeof(comGetInfo));
-    red = 0;
-    green = 1;
-    lidarRead(lidBuffer, sizeof(rspGetInfo));
-    if (memcmp(lidBuffer, rspGetInfo, sizeof(rspGetInfo)) != 0) { 
-      pc.printf("Info: Bad response\n");
-      assert(false);
-    }
-    else {
-      lidarRead(&info, sizeof(rplidar_response_device_info_t));
-      pc.printf("Model: %d\n", info.model);
-      pc.printf("Firmware version: %d.%d\n", info.firmware_version >> 8, info.firmware_version & 0x00FF);
-      pc.printf("Hardware version: %d\n", info.hardware_version);
-      pc.printf("Serial Number: ");
-      for (i = 15; i >= 0; i--) {
-	pc.printf("%02x", info.serialnum[i]);
-      }
-      pc.printf("\n\n");
-    }
     motoctl = 1;
     result = lidar.write(comStartScan, sizeof(comStartScan));
     assert(result == sizeof(comStartScan));
@@ -100,13 +104,20 @@ int main() {
     }
     red = 1;
     green = 0;
+    result = lidar.write(comStopScan, sizeof(comStopScan));
+    assert(result == sizeof(comStopScan));
+    motoctl = 0;
     for (i = 0; i < 8192; i++) {
       rplidar_response_measurement_node_t *m = (rplidar_response_measurement_node_t *)&(measurement[i]);
-      pc.printf("%02X %02X %02X %02X %02X\n", measurement[i][0],measurement[i][1],measurement[i][2],measurement[i][3],measurement[i][4]);
+      pc.printf("%4ld: %02X %02X %02X %02X %02X\n", i, measurement[i][0],measurement[i][1],measurement[i][2],measurement[i][3],measurement[i][4]);
 
       pc.printf("Quality : %d\n", m->quality >> 2);
-      pc.printf("Angle   : %05.1f\n", (m->angle >> 1) / 64.0);
-      pc.printf("Distance: %05.1f\n\n", m->distance  / 4.0);
+      pc.printf("Angle   : %5.1f\n", (m->angle >> 1) / 64.0);
+      pc.printf("Distance: %5.1f\n\n", m->distance  / 4.0);
+    }
+    /* Make sure the receive buffer is empty before starting again */
+    while (lidar.readable()) {
+      lidarRead(lidBuffer, 1);
     }
   }
 }
