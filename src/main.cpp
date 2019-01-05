@@ -23,6 +23,8 @@ typedef struct rplidar_response_measurement_node_t {
 
 typedef uint8_t measurement_buffer_t[5];
 
+void lidarFlushBuffers(void);
+void lidarWrite(const void *buffer, size_t length);
 void lidarRead(void * buffer, size_t length);
 
 const uint8_t comResetCore[] = {0xA5, 0x40};
@@ -46,7 +48,6 @@ int main() {
   DigitalOut green(LED2);
   DigitalOut motoctl(D3);
   int32_t i;
-  ssize_t result;
 
   // Lights out
   red = 1;
@@ -55,9 +56,11 @@ int main() {
   // Say hello
   pc.printf("Lidar Client\n");
 
+  // Initialise lidar
+  lidarFlushBuffers();
+
   // Get health
-  result = lidar.write(comGetHealth, sizeof(comGetHealth));
-  assert(result == sizeof(comGetHealth));
+  lidarWrite(comGetHealth, sizeof(comGetHealth));
   lidarRead(lidBuffer, sizeof(rspGetHealth));
   if (memcmp(lidBuffer, rspGetHealth, sizeof(rspGetHealth)) != 0) { 
     pc.printf("Health: Bad response\n");
@@ -74,8 +77,7 @@ int main() {
   }
 
   // Get info
-  result = lidar.write(comGetInfo, sizeof(comGetInfo));
-  assert(result == sizeof(comGetInfo));
+  lidarWrite(comGetInfo, sizeof(comGetInfo));
   lidarRead(lidBuffer, sizeof(rspGetInfo));
   if (memcmp(lidBuffer, rspGetInfo, sizeof(rspGetInfo)) != 0) { 
     pc.printf("Info: Bad response\n");
@@ -95,19 +97,15 @@ int main() {
 
   while (true) {
 
+
     // Start the motor
     motoctl = 1;
-
-    // Make sure the receive buffer is empty before starting a new scan
-    while (lidar.readable()) {
-      lidarRead(lidBuffer, 1);
-    }
 
     red = 0;
 
     // Start a scan
-    result = lidar.write(comStartScan, sizeof(comStartScan));
-    assert(result == sizeof(comStartScan));
+    lidarFlushBuffers();
+    lidarWrite(comStartScan, sizeof(comStartScan));
     lidarRead(lidBuffer, sizeof(rspStartScan));
     if (memcmp(lidBuffer, rspStartScan, sizeof(rspStartScan)) != 0) {
       pc.printf("Start scan: Bad response\n");
@@ -142,8 +140,9 @@ int main() {
     green = 0;
 
     // Stop the scan
-    result = lidar.write(comStopScan, sizeof(comStopScan));
-    assert(result == sizeof(comStopScan));
+    //result = lidar.write(comStopScan, sizeof(comStopScan));
+    //assert(result == sizeof(comStopScan));
+    lidarWrite(comStopScan, sizeof(comStopScan));
 
     // Stop the motor
     motoctl = 0;
@@ -158,6 +157,22 @@ int main() {
       pc.printf("Distance: %5.1f\n\n", m->distance  / 4.0);
     }
   }
+}
+
+void lidarFlushBuffers(void) {
+  // Flush TX buffer
+  lidar.sync();
+  // Flush RX buffer 
+  while (lidar.readable()) {
+    lidarRead(lidBuffer, 1);
+  }
+}
+
+void lidarWrite(const void *buffer, size_t length) {
+  ssize_t result;
+
+  result = lidar.write(buffer, length);
+  assert(result == (ssize_t)length);
 }
 
 void lidarRead(void *buffer, size_t length) {
