@@ -24,8 +24,11 @@ typedef struct rplidar_response_measurement_node_t {
 typedef uint8_t measurement_buffer_t[5];
 
 void lidarFlushBuffers(void);
-void lidarWrite(const void *buffer, size_t length);
-void lidarRead(void * buffer, size_t length);
+void lidarWrite(const uint8_t buffer[], size_t length);
+void lidarRead(uint8_t buffer[], size_t length);
+int lidarReadScanResponse(void);
+int lidarReadResponse(const uint8_t *response, uint32_t length);
+void timeoutAbort(void);
 
 const uint8_t comResetCore[] = {0xA5, 0x40};
 const uint8_t comStopScan[] = {0xA5, 0x25};
@@ -36,18 +39,21 @@ const uint8_t rspGetInfo[] = {0xA5, 0x5A, 0x14, 0x00, 0x00, 0x00, 0x04};
 const uint8_t comGetHealth[] = {0xA5, 0x52};
 const uint8_t rspGetHealth[] = {0xA5, 0x5A, 0x03, 0x00, 0x00, 0x00, 0x06};
 
-UARTSerial lidar(D1, D0, 115200);
+RawSerial lidar(D1, D0, 115200);
 Serial pc(USBTX, USBRX, 115200);
 uint8_t lidBuffer[32];
 rplidar_response_device_health_t health;
 rplidar_response_device_info_t info;
 measurement_buffer_t measurement[8192];
+Timeout timeout;
+volatile bool timedout;
 
 int main() {
   DigitalOut red(LED1);
   DigitalOut green(LED2);
   DigitalOut motoctl(D3);
   int32_t i;
+
 
   // Lights out
   red = 1;
@@ -56,19 +62,12 @@ int main() {
   // Say hello
   pc.printf("Lidar Client\n");
 
-  // Initialise lidar
-  lidarFlushBuffers();
 
   // Get health
-  lidarWrite(comGetHealth, sizeof(comGetHealth));
-  lidarRead(lidBuffer, sizeof(rspGetHealth));
-  if (memcmp(lidBuffer, rspGetHealth, sizeof(rspGetHealth)) != 0) { 
-    pc.printf("Health: Bad response\n");
-    assert(false);
-  }
-  else {
-    lidarRead(&health, sizeof(rplidar_response_device_health_t));
-  }
+  do {
+    lidarWrite(comGetHealth, sizeof(comGetHealth));
+  } while (! lidarReadResponse(rspGetHealth, sizeof(rspGetHealth)));
+  lidarRead((uint8_t *)&health, sizeof(rplidar_response_device_health_t));
   if (health.status == 0) {
     pc.printf("Health status: Good\n");
   }
@@ -77,23 +76,18 @@ int main() {
   }
 
   // Get info
-  lidarWrite(comGetInfo, sizeof(comGetInfo));
-  lidarRead(lidBuffer, sizeof(rspGetInfo));
-  if (memcmp(lidBuffer, rspGetInfo, sizeof(rspGetInfo)) != 0) { 
-    pc.printf("Info: Bad response\n");
-    assert(false);
+  do {
+    lidarWrite(comGetInfo, sizeof(comGetInfo));
+  } while (! lidarReadResponse(rspGetInfo, sizeof(rspGetInfo)));
+  lidarRead((uint8_t *)&info, sizeof(rplidar_response_device_info_t));
+  pc.printf("Model: %d\n", info.model);
+  pc.printf("Firmware version: %d.%d\n", info.firmware_version >> 8, info.firmware_version & 0x00FF);
+  pc.printf("Hardware version: %d\n", info.hardware_version);
+  pc.printf("Serial Number: ");
+  for (i = 15; i >= 0; i--) {
+    pc.printf("%02x", info.serialnum[i]);
   }
-  else {
-    lidarRead(&info, sizeof(rplidar_response_device_info_t));
-    pc.printf("Model: %d\n", info.model);
-    pc.printf("Firmware version: %d.%d\n", info.firmware_version >> 8, info.firmware_version & 0x00FF);
-    pc.printf("Hardware version: %d\n", info.hardware_version);
-    pc.printf("Serial Number: ");
-    for (i = 15; i >= 0; i--) {
-      pc.printf("%02x", info.serialnum[i]);
-    }
-    pc.printf("\n\n");
-  }
+  pc.printf("\n\n");
 
   while (true) {
 
@@ -104,13 +98,10 @@ int main() {
     red = 0;
 
     // Start a scan
-    lidarFlushBuffers();
-    lidarWrite(comStartScan, sizeof(comStartScan));
-    lidarRead(lidBuffer, sizeof(rspStartScan));
-    if (memcmp(lidBuffer, rspStartScan, sizeof(rspStartScan)) != 0) {
-      pc.printf("Start scan: Bad response\n");
-      assert(false);
+    do {
+      lidarWrite(comStartScan, sizeof(comStartScan));
     }
+    while (!lidarReadResponse(rspStartScan, sizeof(rspStartScan)));
 
     green = 1;
 
@@ -160,31 +151,62 @@ int main() {
 }
 
 void lidarFlushBuffers(void) {
+  int c;
   // Flush TX buffer
-  lidar.sync();
+  //lidar.sync();
   // Flush RX buffer 
   while (lidar.readable()) {
-    lidarRead(lidBuffer, 1);
+    c = lidar.getc();
   }
 }
 
-void lidarWrite(const void *buffer, size_t length) {
-  ssize_t result;
+void lidarWrite(const uint8_t buffer[], size_t length) {
+  uint32_t i;
+  int c;
 
-  result = lidar.write(buffer, length);
-  assert(result == (ssize_t)length);
-}
-
-void lidarRead(void *buffer, size_t length) {
-  ssize_t result;
-  size_t nRemaining;
-  uint8_t * pbuf = (uint8_t *)buffer;
-
-  nRemaining = length;
-  while (nRemaining > 0) {
-    result = lidar.read(pbuf, nRemaining);
-    assert(result >= 0);
-    nRemaining -= result;
-    pbuf += result;
+  for (i = 0; i < length; i += 1) {
+    c = lidar.putc(buffer[i]);
+    assert(c == buffer[i]);
   }
 }
+
+void lidarRead(uint8_t buffer[], size_t length) {
+  uint32_t i;
+
+  for (i = 0; i < length; i += 1) {
+    buffer[i] = (uint8_t)lidar.getc();
+  }
+}
+
+int lidarReadResponse(const uint8_t *response, uint32_t length) {
+  int i = 0;
+  int c;
+  int result = 0;
+
+  timedout = false;
+  timeout.attach(&timeoutAbort, 0.01);
+
+  while (i < length && !timedout) {
+    c = lidar.getc();
+    if (c == response[i]) {
+      i += 1;
+    }
+    else if (c == response[0]) {
+      i = 1;
+    }
+    else {
+      i = 0;
+    }
+  }
+  if (!timedout) {
+    timeout.detach();
+    result = 1;
+  }
+  return result;
+}
+
+void timeoutAbort(void) {
+  timedout = true;
+  lidar.abort_read();
+}
+
