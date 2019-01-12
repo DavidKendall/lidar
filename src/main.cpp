@@ -29,6 +29,8 @@ void lidarRead(uint8_t buffer[], size_t length);
 int lidarReadScanResponse(void);
 int lidarReadResponse(const uint8_t *response, uint32_t length);
 void timeoutAbort(void);
+int lidarReadByte(void);
+void serialCbHandler(int events);
 
 const uint8_t comResetCore[] = {0xA5, 0x40};
 const uint8_t comStopScan[] = {0xA5, 0x25};
@@ -47,6 +49,9 @@ rplidar_response_device_info_t info;
 measurement_buffer_t measurement[8192];
 Timeout timeout;
 volatile bool timedout;
+volatile bool byteReceived;
+event_callback_t serialCb = serialCbHandler;
+uint8_t rxByte;
 
 int main() {
   DigitalOut red(LED1);
@@ -137,7 +142,7 @@ int main() {
 
     // Stop the motor
     motoctl = 0;
-
+    //wait(2);
     // Print the readings
     for (i = 0; i < 8192; i++) {
       rplidar_response_measurement_node_t *m = (rplidar_response_measurement_node_t *)&(measurement[i]);
@@ -156,7 +161,7 @@ void lidarFlushBuffers(void) {
   //lidar.sync();
   // Flush RX buffer 
   while (lidar.readable()) {
-    c = lidar.getc();
+    c = lidarReadByte();
   }
 }
 
@@ -174,7 +179,7 @@ void lidarRead(uint8_t buffer[], size_t length) {
   uint32_t i;
 
   for (i = 0; i < length; i += 1) {
-    buffer[i] = (uint8_t)lidar.getc();
+    buffer[i] = (uint8_t)lidarReadByte();
   }
 }
 
@@ -187,7 +192,7 @@ int lidarReadResponse(const uint8_t *response, uint32_t length) {
   timeout.attach(&timeoutAbort, 0.01);
 
   while (i < length && !timedout) {
-    c = lidar.getc();
+    c = lidarReadByte();
     if (c == response[i]) {
       i += 1;
     }
@@ -210,3 +215,18 @@ void timeoutAbort(void) {
   lidar.abort_read();
 }
 
+int lidarReadByte(void) {
+  int result;
+
+  byteReceived = false;
+  result = lidar.read(&rxByte, 1, serialCb, SERIAL_EVENT_RX_COMPLETE, '\xFF');
+  while (! byteReceived) {
+  }
+  //assert(result == 1);
+  return rxByte;
+}
+
+void serialCbHandler(int events) {
+  byteReceived = true;
+}
+    
